@@ -10,9 +10,8 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = 'uploads'
 
-GEMINI_API_KEY = "AIzaSyBYPhIsuGYXzMRiYrFi7yw6M2bH3EB4TFA"
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "AIzaSyBYPhIsuGYXzMRiYrFi7yw6M2bH3EB4TFA")
 
 if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
     raise ValueError("Please set your Gemini API key")
@@ -20,17 +19,20 @@ if not GEMINI_API_KEY or GEMINI_API_KEY == "your-gemini-api-key-here":
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# Load embedder once at startup
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+# Load embedder once at startup (cached in serverless environment)
+embedder = None
 
-# Ensure upload folder exists
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+def get_embedder():
+    global embedder
+    if embedder is None:
+        embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    return embedder
 
 
 def extract_text(file):
     """Extract text from uploaded file"""
     filename = secure_filename(file.filename)
-    file_ext = filename.rsplit('.', 1)[1].lower()
+    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
     
     if file_ext == 'pdf':
         reader = PyPDF2.PdfReader(file)
@@ -63,8 +65,9 @@ def extract_bullets(text):
 
 def compute_match_score(resume, job):
     """Calculate semantic similarity score"""
-    r_emb = embedder.encode(resume, convert_to_tensor=True)
-    j_emb = embedder.encode(job, convert_to_tensor=True)
+    emb = get_embedder()
+    r_emb = emb.encode(resume, convert_to_tensor=True)
+    j_emb = emb.encode(job, convert_to_tensor=True)
     sim = util.cos_sim(r_emb, j_emb)[0][0].item()
     return round(sim * 100, 1)
 
@@ -226,5 +229,9 @@ def download_bullets():
         return jsonify({'success': False, 'error': str(e)})
 
 
+# For Vercel serverless deployment
 if __name__ == '__main__':
-    app.run()  
+    app.run(debug=True, port=5000)
+else:
+    # This makes the app work with Vercel
+    app = app
